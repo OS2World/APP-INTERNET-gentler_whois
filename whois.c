@@ -1,0 +1,190 @@
+/*
+ * whois.c, a kinder, gentler whois.
+ *
+ */
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <stdio.h>
+
+#define	NICHOST	"whois.internic.net"
+#ifdef __EMX__
+#define strncasecmp strnicmp
+#define  WHOIS_PATH (char *)getenv("ETC")
+#define  WHOIS_FILE "\\whohosts.txt"
+#else
+#define  WHOIS_PATH "/etc/"
+#define  WHOIS_FILE "whohosts.txt"
+#endif
+#define  SX 2048
+
+
+char *nichost(char *name);		/* Routine to parse /etc/whohosts */
+
+char defhost[SX] = "";			/* Default whois host, or from -h */
+char lookuphost[SX] = "";		/* Whois host from /etc/whohosts.txt */
+char tld[SX];						/* TLD component of argument */
+
+main(argc, argv)
+	int argc;
+	char **argv;
+{
+	extern char *optarg;
+	extern int optind;
+	register FILE *sfi, *sfo;
+	register int ch;
+	struct sockaddr_in sin;
+	struct hostent *hp;
+	struct servent *sp;
+	int s;
+	char *host;
+	
+
+#ifdef	SOCKS
+	SOCKSinit(argv[0]);
+#endif
+
+	if (argc == 1)
+		usage();
+
+	strcpy (defhost, NICHOST);
+	host = NICHOST;
+;
+	while ((ch = getopt(argc, argv, "h:")) != EOF)
+		switch((char)ch) {
+		case 'h':
+			{
+			host = optarg; 
+			strcpy (defhost, optarg);
+			break;
+			}
+		case '?':
+		default:
+			usage();
+		}
+	argc -= optind;
+	argv += optind;
+
+	strcpy (lookuphost, nichost(*argv));
+	host = lookuphost;
+
+	hp = gethostbyname(host);
+	if (hp == NULL) {
+		(void)fprintf(stderr, "\nNuts, whois: %s: ", host);
+		herror((char *)NULL);
+		exit(1);
+	}
+	host = hp->h_name;
+	s = socket(hp->h_addrtype, SOCK_STREAM, 0);
+	if (s < 0) {
+		perror("whois: socket");
+		exit(1);
+	}
+	bzero((caddr_t)&sin, sizeof (sin));
+	sin.sin_family = hp->h_addrtype;
+	bcopy(hp->h_addr, (char *)&sin.sin_addr, hp->h_length);
+	sp = getservbyname("whois", "tcp");
+#ifndef __EMX__
+	if (sp == NULL) {
+		(void)fprintf(stderr, "whois: whois/tcp: unknown service\n");
+		exit(1);
+	}
+#else
+	if (sp == NULL)
+		sp = getservbyname("nicname", "tcp");
+	if (sp == NULL)
+		sin.sin_port = htons(43);
+	else
+#endif
+	sin.sin_port = sp->s_port;
+	if (connect(s, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
+		perror("whois: connect");
+		exit(1);
+	}
+	sfi = fdopen(s, "r");
+	sfo = fdopen(s, "w");
+	if (sfi == NULL || sfo == NULL) {
+		perror("whois: fdopen");
+		(void)close(s);
+		exit(1);
+	}
+	while (argc-- > 1)
+		{
+		(void)fprintf(sfo, "%s ", *argv++);
+		}
+	(void)fprintf(sfo, "%s\r\n", *argv);
+	(void)fflush(sfo);
+	while ((ch = getc(sfi)) != EOF)
+		putchar(ch);
+	exit(0);
+}
+
+usage()
+{
+	(void)fprintf(stderr, "Usage1: whois [-h whois_server_hostname] name ...\n\nWhois will look in the file %s%s for a list of TLD and IP whois servers.\n\nThe latest copy of %s can be found at:\n\n                   http://dns.vrx.net/tech/rootzone/whohosts.txt\n\n", WHOIS_PATH, WHOIS_FILE, WHOIS_FILE);
+	exit(1);
+}
+
+
+char *nichost (char *name)
+	{
+	FILE *hosts;
+	char hostsfile[SX];
+	static char inbuf[SX];
+	char *s;
+
+	strcpy (hostsfile, WHOIS_PATH);
+	strcat (hostsfile, WHOIS_FILE);
+
+	hosts = fopen (hostsfile, "r"); 
+
+	if (hosts == (FILE *)NULL)
+		{
+		fprintf (stderr, "\nCan't find whois hosts file as %s\nSee http://dns.vrx.net/tech/rootzone/whohosts.txt to get a copy.\n", hostsfile);
+
+		return (defhost);
+		}
+	else
+		{
+		s = name + strlen (name);
+
+		while ((*s != '.') && (s > name))
+			{
+			s--;
+			}
+
+		if (s == name)
+			{
+			/* No TLD found */
+			return (defhost);
+			}
+		else
+			{
+			/* s points to .dom */
+
+			if (*(s+1) != '\0') s++;		/* skip . */
+
+			if (fgets (inbuf, SX - 1, hosts) != (char *)NULL)
+				{
+				do
+					{
+					if (strncasecmp (s, inbuf, strlen (s)) == 0)
+						{
+						/* Nuke trailing \n */
+
+						inbuf[strlen (inbuf) -1] = '\0';
+
+						return (inbuf + strlen (s) + 1);
+						}
+					} while (fgets (inbuf, SX - 1, hosts) != (char *)NULL);
+				}
+			}
+
+		}
+
+	return (defhost);
+	}
+
+	
